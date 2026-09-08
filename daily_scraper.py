@@ -20,8 +20,8 @@ SEEN_JOBS_FILE = "seen_jobs_master.csv"
 DAILY_OUTPUT_FILE = "daily_leads.csv"
 
 # SMTP Credentials from Environment Variables
-SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com") # Defaults to Gmail
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SMTP_SERVER = os.environ.get("SMTP_SERVER") or "smtp.gmail.com" 
+SMTP_PORT = int(os.environ.get("SMTP_PORT") or 587)
 SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASS = os.environ.get("SMTP_PASS")
 RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL")
