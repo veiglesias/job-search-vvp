@@ -1,11 +1,9 @@
 import os
+import json
 import pandas as pd
 import urllib.parse
 from datetime import datetime
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
+import gspread
 from jobspy import scrape_jobs
 
 # Configuration
@@ -17,28 +15,43 @@ QUERIES = [
     "Operations Analyst"
 ]
 SEEN_JOBS_FILE = "seen_jobs_master.csv"
-DAILY_OUTPUT_FILE = "daily_leads.csv"
-
-# SMTP Credentials from Environment Variables
-SMTP_SERVER = os.environ.get("SMTP_SERVER") or "smtp.gmail.com" 
-SMTP_PORT = int(os.environ.get("SMTP_PORT") or 587)
-SMTP_USER = os.environ.get("SMTP_USER")
-SMTP_PASS = os.environ.get("SMTP_PASS")
-RECIPIENT_EMAIL = os.environ.get("RECIPIENT_EMAIL")
+HITLIST_LIMIT = 100
 
 def generate_linkedin_url(company_name):
-    """Generates a URL-encoded LinkedIn people search link."""
     if pd.isna(company_name) or not str(company_name).strip():
         return ""
-    # We append "Recruiter" to the company name to narrow the search
     search_string = f"{company_name} Recruiter"
-    encoded_string = urllib.parse.quote(search_string)
-    return f"https://www.linkedin.com/search/results/people/?keywords={encoded_string}"
+    return f"https://www.linkedin.com/search/results/people/?keywords={urllib.parse.quote(search_string)}"
+
+def generate_message(row):
+    title = row.get('title', 'this role')
+    company = row.get('company', 'your company')
+    if pd.isna(title) or pd.isna(company):
+        return ""
+    
+    return (f"Hi [Recruiter Name], I just submitted my application for the {title} role at {company}. "
+            f"Given my M.S. in Business Analytics and background in forecasting and compliance, I believe I'd be a strong fit for your organization—"
+            f"whether in this specific position or other data/operations roles your team is currently recruiting for. "
+            f"I know you are busy, but I'd love to connect and introduce myself!")
 
 def main():
     print(f"Starting job scrape at {datetime.now()} UTC")
     
-    # Load previously seen jobs for deduplication
+    # 1. Load Google Sheets Connection
+    creds_json = os.environ.get("GCP_CREDENTIALS")
+    sheet_id = os.environ.get("SHEET_ID")
+    
+    if not creds_json or not sheet_id:
+        print("ERROR: Missing GCP_CREDENTIALS or SHEET_ID environment variables.")
+        return
+
+    creds_dict = json.loads(creds_json)
+    gc = gspread.service_account_from_dict(creds_dict)
+    sh = gc.open_by_key(sheet_id)
+    ws_hitlist = sh.worksheet("Today's Hitlist")
+    ws_vault = sh.worksheet("The Vault")
+
+    # 2. Load Deduplication State
     if os.path.exists(SEEN_JOBS_FILE):
         seen_df = pd.read_csv(SEEN_JOBS_FILE)
         seen_urls = set(seen_df['job_url'].dropna().tolist())
@@ -47,85 +60,66 @@ def main():
         
     all_new_jobs = []
 
+    # 3. Scrape
     for query in QUERIES:
         print(f"Scraping for: {query}...")
         try:
-            # Query multiple boards via jobspy
             jobs = scrape_jobs(
                 site_name=["linkedin", "indeed", "glassdoor"],
                 search_term=query,
-                location="USA", # Modify this if targeting a specific city
-                results_wanted=30, 
+                location="USA",
+                results_wanted=25, # Pull ~125 total across 5 queries to have a healthy vault
                 hours_old=24,
                 country_indeed="USA"
             )
-            
             if not jobs.empty:
-                # Deduplicate: Keep only jobs whose URL is NOT in seen_urls
                 new_jobs = jobs[~jobs['job_url'].isin(seen_urls)].copy()
                 all_new_jobs.append(new_jobs)
-                print(f" -> Found {len(new_jobs)} net-new jobs for '{query}'.")
-            else:
-                print(f" -> No jobs found for '{query}' in the last 24h.")
-
         except Exception as e:
-            # Catch rate limits or timeouts and continue to the next query
             print(f" -> ERROR scraping for '{query}': {e}")
             
     if not all_new_jobs:
-        print("No net-new jobs found across any queries today. Exiting.")
+        print("No net-new jobs found today. Exiting.")
         return
 
-    # Combine all net-new jobs into a single DataFrame
     daily_leads = pd.concat(all_new_jobs, ignore_index=True)
-    
-    # Secondary deduplication: Remove duplicates gathered in today's run
     daily_leads.drop_duplicates(subset=['job_url'], inplace=True)
     
-    # Data Augmentation: Add LinkedIn Recruiter search link
-    daily_leads['LinkedIn_Recruiter_Search'] = daily_leads['company'].apply(generate_linkedin_url)
+    # 4. Data Augmentation
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    daily_leads['Date Added'] = today_str
+    daily_leads['Recruiter Link'] = daily_leads['company'].apply(generate_linkedin_url)
+    daily_leads['Outreach Template'] = daily_leads.apply(generate_message, axis=1)
+    daily_leads['Status'] = 'New Lead'
     
-    # Save the daily payload to CSV
-    daily_leads.to_csv(DAILY_OUTPUT_FILE, index=False)
-    print(f"Saved {len(daily_leads)} total net-new leads to {DAILY_OUTPUT_FILE}.")
+    # Keep only the columns we need for the CRM, fill NaNs so Google Sheets doesn't crash
+    columns_to_keep = ['Date Added', 'company', 'title', 'job_url', 'Recruiter Link', 'Outreach Template', 'Status']
+    daily_leads = daily_leads[columns_to_keep].fillna("")
     
-    # Update the persistent state tracker
+    # 5. Split Hitlist vs Vault
+    # Randomly shuffle so you get a mix of all queries in your hitlist
+    daily_leads = daily_leads.sample(frac=1).reset_index(drop=True)
+    
+    hitlist_df = daily_leads.head(HITLIST_LIMIT)
+    vault_df = daily_leads.iloc[HITLIST_LIMIT:]
+    
+    # 6. Push to Google Sheets (Append, DO NOT overwrite)
+    if not hitlist_df.empty:
+        ws_hitlist.append_rows(hitlist_df.values.tolist())
+        print(f"Appended {len(hitlist_df)} jobs to Today's Hitlist.")
+        
+    if not vault_df.empty:
+        ws_vault.append_rows(vault_df.values.tolist())
+        print(f"Appended {len(vault_df)} jobs to The Vault.")
+
+    # 7. Update local CSV state for tomorrow
     new_seen = daily_leads[['job_url']].copy()
     if os.path.exists(SEEN_JOBS_FILE):
         new_seen.to_csv(SEEN_JOBS_FILE, mode='a', header=False, index=False)
     else:
         new_seen.to_csv(SEEN_JOBS_FILE, index=False)
-    
-    # Dispatch Email
-    if SMTP_USER and SMTP_PASS and RECIPIENT_EMAIL:
-        send_email(DAILY_OUTPUT_FILE, len(daily_leads))
-    else:
-        print("WARNING: SMTP credentials not fully provided. Skipping email delivery.")
-
-def send_email(file_path, job_count):
-    print("Preparing to send email digest...")
-    msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
-    msg['To'] = RECIPIENT_EMAIL
-    msg['Subject'] = f"Automated Lead Gen: {job_count} New Jobs Found"
-    
-    body = f"Attached is your daily digest of {job_count} net-new job leads spanning the last 24 hours.\n\nTime to network!"
-    msg.attach(MIMEText(body, 'plain'))
-    
-    with open(file_path, 'rb') as f:
-        attachment = MIMEApplication(f.read(), _subtype="csv")
-        attachment.add_header('Content-Disposition', 'attachment', filename=os.path.basename(file_path))
-        msg.attach(attachment)
         
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls() # Secure the connection
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
-        server.quit()
-        print("Email sent successfully.")
-    except Exception as e:
-        print(f"Failed to send email: {e}")
+    print("Pipeline complete!")
 
 if __name__ == "__main__":
     main()
