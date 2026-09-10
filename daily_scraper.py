@@ -95,6 +95,13 @@ def main():
     # Keep only the columns we need for the CRM, fill NaNs so Google Sheets doesn't crash
     columns_to_keep = ['Date Added', 'company', 'title', 'job_url', 'Recruiter Link', 'Outreach Template', 'Status']
     daily_leads = daily_leads[columns_to_keep].fillna("")
+
+    # 4.5 The Bouncer: Filter out Senior, Intern, and Management roles
+    # We use \b to ensure we match whole words (so we don't accidentally ban "internal" when looking for "intern")
+    forbidden_words = r'\b(senior|sr\.|sr|intern|internship|principal|lead|manager|director)\b'
+    
+    # Keep only the rows where the job title DOES NOT contain the forbidden words
+    daily_leads = daily_leads[~daily_leads['title'].str.contains(forbidden_words, case=False, na=False, regex=True)]
     
     # 5. Split Hitlist vs Vault
     # Randomly shuffle so you get a mix of all queries in your hitlist
