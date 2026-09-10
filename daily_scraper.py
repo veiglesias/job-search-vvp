@@ -28,6 +28,25 @@ def generate_message(row):
     company = row.get('company', 'your company')
     if pd.isna(title) or pd.isna(company):
         return ""
+
+def classify_resume(title):
+    title_lower = str(title).lower()
+    
+    # 1. Data / Tech Bucket
+    if any(word in title_lower for word in ['data', 'intelligence', 'analytics engineer', 'scientist', 'machine learning', 'bi']):
+        return "Data.pdf"
+    
+    # 2. Compliance / Risk Bucket
+    elif any(word in title_lower for word in ['compliance', 'aml', 'risk', 'fraud', 'regulatory', 'trust', 'crimes']):
+        return "Compliance.pdf"
+    
+    # 3. Operations / Strategy Bucket
+    elif any(word in title_lower for word in ['operations', 'consulting', 'strategy', 'business analyst', 'project']):
+        return "Operations.pdf"
+    
+    # Default Fallback
+    else:
+        return "(S).pdf"
     
     return (f"Hi [Recruiter Name], I just submitted my application for the {title} role at {company}. "
             f"Given my M.S. in Business Analytics and background in forecasting and compliance, I believe I'd be a strong fit for your organization—"
@@ -93,7 +112,7 @@ def main():
     daily_leads['Status'] = 'New Lead'
     
     # Keep only the columns we need for the CRM, fill NaNs so Google Sheets doesn't crash
-    columns_to_keep = ['Date Added', 'company', 'title', 'job_url', 'Recruiter Link', 'Outreach Template', 'Status']
+    columns_to_keep = ['Date Added', 'company', 'title', 'Resume Version', 'job_url', 'Recruiter Link', 'Outreach Template', 'Status']
     daily_leads = daily_leads[columns_to_keep].fillna("")
 
     # 4.5 The Bouncer: Filter out Senior, Intern, and Management roles
