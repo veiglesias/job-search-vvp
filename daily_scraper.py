@@ -38,6 +38,11 @@ def generate_message(row):
     if pd.isna(title) or pd.isna(company):
         return ""
 
+    return (f"Hi [Recruiter Name], I just submitted my application for the {title} role at {company}. "
+            f"Given my M.S. in Business Analytics and background in forecasting and compliance, I believe I'd be a strong fit for your organization—"
+            f"whether in this specific position or other data/operations roles your team is currently recruiting for. "
+            f"I know you are busy, but I'd love to connect and introduce myself!")
+
 def classify_resume(title):
     title_lower = str(title).lower()
     
@@ -56,11 +61,6 @@ def classify_resume(title):
     # Default Fallback
     else:
         return "Master / Evaluate"
-    
-    return (f"Hi [Recruiter Name], I just submitted my application for the {title} role at {company}. "
-            f"Given my M.S. in Business Analytics and background in forecasting and compliance, I believe I'd be a strong fit for your organization—"
-            f"whether in this specific position or other data/operations roles your team is currently recruiting for. "
-            f"I know you are busy, but I'd love to connect and introduce myself!")
 
 def main():
     print(f"Starting job scrape at {datetime.now()} UTC")
