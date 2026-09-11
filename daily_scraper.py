@@ -12,7 +12,16 @@ QUERIES = [
     "Economic Consulting Analyst",
     "AML Compliance Analyst",
     "Public Sector Analyst",
-    "Operations Analyst"
+    "Operations Analyst",
+    "Data Analyst",
+    "Forecasting Analyst",
+    "Machine Learning Analyst",
+    "Risk Analyst",
+    "Regulatory Analyst",
+    "Fraud Analyst",
+    "Strategy Analyst",
+    "Process Improvement Analyst",
+    "Policy Analyst"
 ]
 SEEN_JOBS_FILE = "seen_jobs_master.csv"
 HITLIST_LIMIT = 100
@@ -32,15 +41,15 @@ def generate_message(row):
 def classify_resume(title):
     title_lower = str(title).lower()
     
-    # 1. Data / Tech Bucket
+    # Data / Tech Bucket
     if any(word in title_lower for word in ['data', 'intelligence', 'analytics engineer', 'scientist', 'machine learning', 'bi']):
         return "Data PDF"
     
-    # 2. Compliance / Risk Bucket
+    # Compliance / Risk Bucket
     elif any(word in title_lower for word in ['compliance', 'aml', 'risk', 'fraud', 'regulatory', 'trust', 'crimes']):
         return "Compliance PDF"
     
-    # 3. Operations / Strategy Bucket
+    # Operations / Strategy Bucket
     elif any(word in title_lower for word in ['operations', 'consulting', 'strategy', 'business analyst', 'project']):
         return "Operations PDF"
     
@@ -56,7 +65,7 @@ def classify_resume(title):
 def main():
     print(f"Starting job scrape at {datetime.now()} UTC")
     
-    # 1. Load Google Sheets Connection
+    # Load Google Sheets Connection
     creds_json = os.environ.get("GCP_CREDENTIALS")
     sheet_id = os.environ.get("SHEET_ID")
     
@@ -70,7 +79,7 @@ def main():
     ws_hitlist = sh.worksheet("Today's Hitlist")
     ws_vault = sh.worksheet("The Vault")
 
-    # 2. Load Deduplication State
+    # Load Deduplication State
     if os.path.exists(SEEN_JOBS_FILE):
         seen_df = pd.read_csv(SEEN_JOBS_FILE)
         seen_urls = set(seen_df['job_url'].dropna().tolist())
@@ -79,7 +88,7 @@ def main():
         
     all_new_jobs = []
 
-    # 3. Scrape
+    # Scrape
     for query in QUERIES:
         print(f"Scraping for: {query}...")
         try:
@@ -104,7 +113,7 @@ def main():
     daily_leads = pd.concat(all_new_jobs, ignore_index=True)
     daily_leads.drop_duplicates(subset=['job_url'], inplace=True)
     
-    # 4. Data Augmentation
+    # Data Augmentation
     today_str = datetime.now().strftime('%Y-%m-%d')
     daily_leads['Date Added'] = today_str
     daily_leads['Recruiter Link'] = daily_leads['company'].apply(generate_linkedin_url)
@@ -116,21 +125,21 @@ def main():
     columns_to_keep = ['Date Added', 'company', 'title', 'Resume Version', 'job_url', 'Recruiter Link', 'Outreach Template', 'Status']
     daily_leads = daily_leads[columns_to_keep].fillna("")
 
-    # 4.5 The Bouncer: Filter out Senior, Intern, and Management roles
+    # Filter out non-related, not qualified roles
     # We use \b to ensure we match whole words (so we don't accidentally ban "internal" when looking for "intern")
     forbidden_words = r'\b(senior|sr\.|sr|intern|internship|principal|lead|manager|director)\b'
     
     # Keep only the rows where the job title DOES NOT contain the forbidden words
     daily_leads = daily_leads[~daily_leads['title'].str.contains(forbidden_words, case=False, na=False, regex=True)]
     
-    # 5. Split Hitlist vs Vault
+    # Hitlist vs Vault
     # Randomly shuffle so you get a mix of all queries in your hitlist
     daily_leads = daily_leads.sample(frac=1).reset_index(drop=True)
     
     hitlist_df = daily_leads.head(HITLIST_LIMIT)
     vault_df = daily_leads.iloc[HITLIST_LIMIT:]
     
-    # 6. Push to Google Sheets (Append, DO NOT overwrite)
+    # Push to Google Sheets (Append to prevent overwriting)
     if not hitlist_df.empty:
         ws_hitlist.append_rows(hitlist_df.values.tolist())
         print(f"Appended {len(hitlist_df)} jobs to Today's Hitlist.")
@@ -139,7 +148,7 @@ def main():
         ws_vault.append_rows(vault_df.values.tolist())
         print(f"Appended {len(vault_df)} jobs to The Vault.")
 
-    # 7. Update local CSV state for tomorrow
+    # Update local CSV state for tomorrow
     new_seen = daily_leads[['job_url']].copy()
     if os.path.exists(SEEN_JOBS_FILE):
         new_seen.to_csv(SEEN_JOBS_FILE, mode='a', header=False, index=False)
