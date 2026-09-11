@@ -34,19 +34,19 @@ def classify_resume(title):
     
     # 1. Data / Tech Bucket
     if any(word in title_lower for word in ['data', 'intelligence', 'analytics engineer', 'scientist', 'machine learning', 'bi']):
-        return "Data.pdf"
+        return "Data PDF"
     
     # 2. Compliance / Risk Bucket
     elif any(word in title_lower for word in ['compliance', 'aml', 'risk', 'fraud', 'regulatory', 'trust', 'crimes']):
-        return "Compliance.pdf"
+        return "Compliance PDF"
     
     # 3. Operations / Strategy Bucket
     elif any(word in title_lower for word in ['operations', 'consulting', 'strategy', 'business analyst', 'project']):
-        return "Operations.pdf"
+        return "Operations PDF"
     
     # Default Fallback
     else:
-        return "(S).pdf"
+        return "Master / Evaluate"
     
     return (f"Hi [Recruiter Name], I just submitted my application for the {title} role at {company}. "
             f"Given my M.S. in Business Analytics and background in forecasting and compliance, I believe I'd be a strong fit for your organization—"
