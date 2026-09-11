@@ -109,6 +109,7 @@ def main():
     daily_leads['Date Added'] = today_str
     daily_leads['Recruiter Link'] = daily_leads['company'].apply(generate_linkedin_url)
     daily_leads['Outreach Template'] = daily_leads.apply(generate_message, axis=1)
+    daily_leads['Resume Version'] = daily_leads['title'].apply(classify_resume)
     daily_leads['Status'] = 'New Lead'
     
     # Keep only the columns we need for the CRM, fill NaNs so Google Sheets doesn't crash
