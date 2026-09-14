@@ -127,7 +127,7 @@ def main():
 
     # Filter out non-related, not qualified roles
     # We use \b to ensure we match whole words (so we don't accidentally ban "internal" when looking for "intern")
-    forbidden_words = r'\b(senior|sr\.|sr|intern|internship|principal|lead|manager|director)\b'
+    forbidden_words = r'\b(senior|sr\.|sr|intern|internship|principal|lead|manager|director|vice-president|president|staff)\b'
     
     # Keep only the rows where the job title DOES NOT contain the forbidden words
     daily_leads = daily_leads[~daily_leads['title'].str.contains(forbidden_words, case=False, na=False, regex=True)]
