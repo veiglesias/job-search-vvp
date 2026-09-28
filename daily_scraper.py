@@ -1,6 +1,7 @@
 import os
 import json
 import pandas as pd
+import re
 import urllib.parse
 from datetime import datetime
 import gspread
@@ -57,24 +58,107 @@ def format_pay(row):
     suffix = f"/{interval}" if pd.notna(interval) and interval else ""
     return f"{fmt(lo)}-{fmt(hi)}{suffix}" if pd.notna(lo) and pd.notna(hi) and lo != hi else f"{fmt(lo if pd.notna(lo) else hi)}{suffix}"
 
-def classify_resume(title):
-    title_lower = str(title).lower()
-    
-    # Data / Tech Bucket
-    if any(word in title_lower for word in ['data', 'intelligence', 'analytics engineer', 'scientist', 'machine learning', 'bi']):
-        return "Data PDF"
-    
-    # Compliance / Risk Bucket
-    elif any(word in title_lower for word in ['compliance', 'aml', 'risk', 'fraud', 'regulatory', 'trust', 'crimes']):
-        return "Compliance PDF"
-    
-    # Operations / Strategy Bucket
-    elif any(word in title_lower for word in ['operations', 'consulting', 'strategy', 'business analyst', 'project']):
-        return "Operations PDF"
-    
-    # Default Fallback
-    else:
+# ---------------------------------------------------------------------------
+# Description cleanup
+# ---------------------------------------------------------------------------
+def clean_description(text):
+    """Turn jobspy's markdown into plain, readable text."""
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ""
+    t = str(text)
+    t = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", r"\1", t)       # markdown escapes: data\-driven -> data-driven
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)                # [link text](url) -> link text
+    t = re.sub(r"^[ \t]*[*+\-•][ \t]+", "- ", t, flags=re.M)      # any bullet level -> "- " (before stripping *)
+    t = re.sub(r"(\*\*|__|\*|`)", "", t)                          # bold / italics / code marks
+    t = re.sub(r"^\s*#+\s*", "", t, flags=re.M)                   # headings
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n\s*\n+", "\n", t)
+    return t.strip()
+
+# ---------------------------------------------------------------------------
+# Résumé selector: scores the whole posting against each bucket
+# ---------------------------------------------------------------------------
+# Terms are matched as whole words/phrases. Title hits count TITLE_WEIGHT times more
+# than description hits, because the title says what the job *is* and the description
+# lists everything it *touches*. Phrases are listed so the more specific one wins
+# (e.g. "data governance" counts toward Compliance, not Data).
+BUCKET_TERMS = {
+    "Data PDF": [
+        "data analyst", "data analytics", "data scientist", "data science", "data engineer",
+        "business intelligence", "bi", "power bi", "tableau", "looker", "dashboard", "dashboards",
+        "sql", "python", "r programming", "pandas", "etl", "data pipeline", "data pipelines",
+        "data model", "data modeling", "data models", "machine learning", "predictive",
+        "forecasting", "forecast", "time series", "statistical", "statistics", "regression",
+        "visualization", "visualizations", "analytics", "kpi", "kpis", "snowflake", "dbt",
+        "a/b testing", "quantitative", "modeling", "key performance indicators", "metrics",
+        "reporting", "insights", "data-driven", "data sources", "data quality", "excel",
+        "large data sets", "large datasets", "data visualization",
+    ],
+    "Compliance PDF": [
+        "compliance", "aml", "anti-money laundering", "bsa", "kyc", "know your customer",
+        "cdd", "edd", "due diligence", "sanctions", "ofac", "fraud", "financial crimes",
+        "financial crime", "transaction monitoring", "suspicious activity", "sar", "sars",
+        "risk", "risk management", "regulatory", "regulation", "regulations", "audit",
+        "auditing", "internal controls", "controls", "sox", "data governance", "governance",
+        "policy", "policies", "privacy", "investigations", "investigation", "trust and safety",
+        "examination", "examiner",
+    ],
+    "Operations PDF": [
+        "operations", "operational", "business operations", "process improvement",
+        "business process", "workflow", "workflows", "supply chain", "logistics", "procurement",
+        "vendor", "vendors", "project management", "project coordination", "program",
+        "stakeholder", "stakeholders", "strategy", "strategic", "consulting", "business analyst",
+        "requirements", "lean", "six sigma", "capacity", "scheduling", "inventory",
+        "onboarding", "implementation", "cross-functional", "efficiency", "operating model",
+    ],
+}
+TITLE_WEIGHT = 5
+# Titles that don't say which track the job is ("Business Analyst", "Analyst", "Associate"):
+# these count only like description words, so the actual responsibilities decide.
+GENERIC_TITLE_TERMS = {"business analyst", "strategy", "strategic", "program", "requirements", "analytics", "modeling"}
+DESC_CAP = 3          # a term repeated 20 times in a description shouldn't swamp everything
+MIN_SIGNAL = 3        # below this total, the posting is too vague to call
+CLOSE_MARGIN = 0.15   # runner-up within 15% of the winner -> show both
+
+_BUCKET_PATTERNS = {
+    b: [(t, re.compile(r"(?<![\w/])" + re.escape(t) + r"(?![\w/])", re.I)) for t in sorted(terms, key=len, reverse=True)]
+    for b, terms in BUCKET_TERMS.items()
+}
+
+def _bucket_score(patterns, title, desc):
+    score, used_spans_t, used_spans_d = 0, [], []
+    for term, pat in patterns:  # longest terms first; skip matches inside an already-counted phrase
+        title_weight = 1 if term in GENERIC_TITLE_TERMS else TITLE_WEIGHT
+        for text, spans, weight, cap in ((title, used_spans_t, title_weight, 1), (desc, used_spans_d, 1, DESC_CAP)):
+            hits = 0
+            for m in pat.finditer(text):
+                if any(a <= m.start() < b for a, b in spans):
+                    continue
+                spans.append(m.span())
+                hits += 1
+            score += weight * min(hits, cap)
+    return score
+
+def classify_resume(title, description="", return_scores=False):
+    title = str(title or "")
+    desc = str(description or "")
+    # Phrases that belong to a more specific bucket are claimed first across buckets
+    claimed = {"data governance": "Compliance PDF", "risk analytics": "Compliance PDF",
+               "fraud analytics": "Compliance PDF", "operations analytics": "Operations PDF"}
+    scores = {b: _bucket_score(p, title, desc) for b, p in _BUCKET_PATTERNS.items()}
+    for phrase, owner in claimed.items():
+        n = len(re.findall(re.escape(phrase), title, re.I)) * TITLE_WEIGHT + min(len(re.findall(re.escape(phrase), desc, re.I)), DESC_CAP)
+        if n:
+            scores[owner] += n  # tip close calls toward the owning bucket
+    if return_scores:
+        return scores
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (best, s1), (second, s2) = ranked[0], ranked[1]
+    if s1 < MIN_SIGNAL:
         return "Master / Evaluate"
+    if s2 >= s1 * (1 - CLOSE_MARGIN):
+        return f"{best} (or {second.replace(' PDF', '')})"
+    return best
 
 def main():
     print(f"Starting job scrape at {datetime.now()} UTC")
@@ -133,7 +217,10 @@ def main():
     daily_leads['Date Added'] = today_str
     daily_leads['Recruiter Link'] = daily_leads['company'].apply(generate_linkedin_url)
     daily_leads['Outreach Template'] = daily_leads.apply(generate_message, axis=1)
-    daily_leads['Resume Version'] = daily_leads['title'].apply(classify_resume)
+    if 'description' not in daily_leads.columns:
+        daily_leads['description'] = ""
+    daily_leads['description'] = daily_leads['description'].apply(clean_description)
+    daily_leads['Resume Version'] = daily_leads.apply(lambda r: classify_resume(r['title'], r['description']), axis=1)
     daily_leads['Status'] = 'New Lead'
     
     daily_leads['Pay'] = daily_leads.apply(format_pay, axis=1)
@@ -143,7 +230,9 @@ def main():
 
     # Filter out non-related, not qualified roles
     # We use \b to ensure we match whole words (so we don't accidentally ban "internal" when looking for "intern")
-    forbidden_words = r'\b(?:senior|sr\.|sr|intern|internship|principal|lead|manager|director|vice-president|president|staff)\b'
+    forbidden_words = r'\b(?:senior|sr\.|sr|intern|internship|principal|lead|manager|director|vice-president|president|staff|iii|iv)\b'
+    # also numbered levels: "Analyst 3", "Level 4", "Associate 3" (level II / 2 is kept)
+    forbidden_words += r'|\b(?:analyst|associate|specialist|level)\s*[34]\b'
     daily_leads = daily_leads[~daily_leads['title'].str.contains(forbidden_words, case=False, na=False, regex=True)]
 
     # Shuffle so ties (and untriaged rows) still get a mix of all queries
