@@ -1,0 +1,91 @@
+name: CRM Job Scraper Pipeline
+
+on:
+  schedule:
+    - cron: '7 12 * * *' # 12:07 UTC (8:07 AM EDT / 7:07 AM EST)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: search, filter and rank, but don't write to the sheet"
+        type: boolean
+        default: true
+      test_scope:
+        description: "What to search"
+        type: choice
+        options: [all, tier1]
+        default: all
+      tier2_group:
+        description: "Tier 2 regions (auto = alternate A/B by date)"
+        type: choice
+        options: [auto, A, B, both, none]
+        default: auto
+
+jobs:
+  scrape-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 50   # enough history for the check below
+
+      # If a live run already went through today (manual or scheduled), a scheduled run
+      # skips itself instead of searching again. Protects against LinkedIn blocking.
+      - name: Skip scheduled run if a live run already happened today
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && \
+             git log --since="$(date -u +%Y-%m-%d) 00:00:00 +0000" --grep="update seen jobs state tracker" --format=%H | grep -q .; then
+            echo "A live run already updated the tracker today (UTC); skipping this scheduled run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Scraper Script
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          # Scheduled runs are always live; manual runs default to a dry run.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          TEST_SCOPE: ${{ inputs.test_scope || 'all' }}
+          TIER2_GROUP: ${{ inputs.tier2_group != 'auto' && inputs.tier2_group || '' }}
+        run: python daily_scraper.py
+
+      - name: Upload daily exports (ranked leads + filtered-out log)
+        if: always() && steps.guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exports-${{ github.run_id }}
+          path: exports/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Commit and Push Persistent CSV State
+        if: ${{ steps.guard.outputs.skip != 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          if [ -f seen_jobs_master.csv ]; then
+            git add seen_jobs_master.csv
+            git diff --staged --quiet || git commit -m "chore: update seen jobs state tracker [skip ci]"
+            git push
+          else
+            echo "No seen_jobs_master.csv was generated today. Nothing to commit."
+          fi
